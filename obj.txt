@@ -1,0 +1,8 @@
+*.a
+*.a.cmd
+*.o.cmd
+*.o
+*.ko
+*.builtin
+*.dwo
+*~
