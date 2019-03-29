@@ -1,16 +1,12 @@
 #!/bin/sh
 #
-# fixup        Prepares network and sshd.
+# nfs        Skip NFS startup
 #
 
 umask 077
 
 start() {
-	ifconfig eth0 hw ether 00:18:3E:02:E3:7F
-	chown root:root /etc/passwd /etc/shadow /etc/group /etc/ssh/ssh_host_*
-	chmod 600 /etc/ssh/ssh_host_*key
-	udhcpc
-	echo "DHCP completed"
+	echo "NFS preparation skipped, OK"
 }
 
 stop() {

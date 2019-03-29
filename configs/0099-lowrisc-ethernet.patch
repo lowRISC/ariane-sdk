@@ -1,3 +1,145 @@
+diff -urN -X obj.txt linux-4.20-rc2/drivers/char/hw_random/Kconfig linux-4.20-rc2/drivers/char/hw_random/Kconfig
+--- linux-4.20-rc2/drivers/char/hw_random/Kconfig	2018-11-11 23:12:31.000000000 +0000
++++ linux-4.20-rc2/drivers/char/hw_random/Kconfig	2019-03-28 14:40:04.166595501 +0000
+@@ -255,6 +255,19 @@
+ 
+ 	  If unsure, say Y.
+ 
++config HW_RANDOM_LOWRISC
++	tristate "LowRISC HW Random Number Generator support"
++	depends on RISCV
++	default HW_RANDOM
++	---help---
++	  This driver provides kernel-side support for the Random Number
++	  Generator hardware found on LowRISC GenesysII and similar boards
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called lowrisc-hwrnd.
++
++	  If unsure, say Y.
++
+ config HW_RANDOM_NOMADIK
+ 	tristate "ST-Ericsson Nomadik Random Number Generator support"
+ 	depends on ARCH_NOMADIK
+diff -urN -X obj.txt linux-4.20-rc2/drivers/char/hw_random/lowrisc-rng.c linux-4.20-rc2/drivers/char/hw_random/lowrisc-rng.c
+--- linux-4.20-rc2/drivers/char/hw_random/lowrisc-rng.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-4.20-rc2/drivers/char/hw_random/lowrisc-rng.c	2019-03-28 16:56:48.464876376 +0000
+@@ -0,0 +1,104 @@
++/*
++ * LowRISC h/w random number generator driver
++ * Based on powernv-rng.c
++ * Copyright 2013 Michael Ellerman, Guo Chao, IBM Corp.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version
++ * 2 of the License, or (at your option) any later version.
++ */
++
++#define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
++
++#include <linux/module.h>
++#include <linux/mod_devicetable.h>
++#include <linux/kernel.h>
++#include <linux/platform_device.h>
++#include <linux/random.h>
++#include <linux/hw_random.h>
++
++#define DRIVER_AUTHOR	"Jonathan Kimmitt <jrrk2@cam.ac.uk>"
++#define DRIVER_DESC	"LowRISC HRNG driver"
++#define DRIVER_NAME     "lowrisc-hwrnd"
++
++static void __iomem *ioaddr;
++
++static int lowrisc_rng_read(struct hwrng *rng, void *data, size_t max, bool wait)
++{
++        volatile uint64_t *rng_base = ioaddr;
++        
++	uint32_t *buf = (uint32_t *)data;
++	int i = 0, dummy, empty, len = max / sizeof(uint32_t);
++
++	/* We rely on rng_buffer_size() being >= sizeof(uint32_t) */
++        do {
++            dummy = rng_base[3];
++            empty = (1LL<<34) & rng_base[3] ? 1 : 0;
++            if (!empty)
++              {
++                rng_base[2] = 0;
++                dummy = rng_base[2];
++                *buf++ = rng_base[2];
++                ++i;
++              }
++          }
++	while ((i < len) && !empty);
++        
++	return i * sizeof(uint32_t);
++}
++
++static struct hwrng lowrisc_hwrng = {
++	.name = DRIVER_NAME,
++	.read = lowrisc_rng_read,
++};
++
++static int lowrisc_rng_remove(struct platform_device *pdev)
++{
++	hwrng_unregister(&lowrisc_hwrng);
++
++	return 0;
++}
++
++static int lowrisc_rng_probe(struct platform_device *pdev)
++{
++	int rc;
++	struct device *dev = &pdev->dev;
++        struct resource *iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++        ioaddr = devm_ioremap_resource(dev, iomem);
++        
++	rc = hwrng_register(&lowrisc_hwrng);
++	if (rc) {
++		/* We only register one device, ignore any others */
++		if (rc == -EEXIST)
++			rc = -ENODEV;
++
++		return rc;
++	}
++
++	pr_info("lowrisc_rng: Lowrisc hardware random number generator platform (%llX-%llX) mapped to %lx\n",
++               iomem[0].start,
++               iomem[0].end,
++               (size_t)(ioaddr));
++
++	return 0;
++}
++
++static const struct of_device_id lowrisc_rng_match[] = {
++	{ .compatible	= DRIVER_NAME },
++	{},
++};
++MODULE_DEVICE_TABLE(of, lowrisc_rng_match);
++
++static struct platform_driver lowrisc_rng_driver = {
++	.driver = {
++		.name = DRIVER_NAME,
++		.of_match_table = lowrisc_rng_match,
++	},
++	.probe	= lowrisc_rng_probe,
++	.remove = lowrisc_rng_remove,
++};
++module_platform_driver(lowrisc_rng_driver);
++
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("HWRNG driver for LowRISC");
+diff -urN -X obj.txt linux-4.20-rc2/drivers/char/hw_random/Makefile linux-4.20-rc2/drivers/char/hw_random/Makefile
+--- linux-4.20-rc2/drivers/char/hw_random/Makefile	2018-11-11 23:12:31.000000000 +0000
++++ linux-4.20-rc2/drivers/char/hw_random/Makefile	2019-03-28 14:40:51.193405306 +0000
+@@ -22,6 +22,7 @@
+ obj-$(CONFIG_HW_RANDOM_TX4939) += tx4939-rng.o
+ obj-$(CONFIG_HW_RANDOM_MXC_RNGA) += mxc-rnga.o
+ obj-$(CONFIG_HW_RANDOM_IMX_RNGC) += imx-rngc.o
++obj-$(CONFIG_HW_RANDOM_LOWRISC) += lowrisc-rng.o
+ obj-$(CONFIG_HW_RANDOM_OCTEON) += octeon-rng.o
+ obj-$(CONFIG_HW_RANDOM_NOMADIK) += nomadik-rng.o
+ obj-$(CONFIG_HW_RANDOM_PSERIES) += pseries-rng.o
 diff -urN -X obj.txt linux-4.20-rc2/drivers/mmc/core/core.c linux-4.20-rc2/drivers/mmc/core/core.c
 --- linux-4.20-rc2/drivers/mmc/core/core.c	2018-11-11 23:12:31.000000000 +0000
 +++ linux-4.20-rc2/drivers/mmc/core/core.c	2019-03-25 17:23:45.601674048 +0000
@@ -50,8 +192,8 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/mmc/host/Kconfig linux-4.20-rc2/driv
  	depends on HAS_DMA
 diff -urN -X obj.txt linux-4.20-rc2/drivers/mmc/host/lowrisc_sd.c linux-4.20-rc2/drivers/mmc/host/lowrisc_sd.c
 --- linux-4.20-rc2/drivers/mmc/host/lowrisc_sd.c	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.20-rc2/drivers/mmc/host/lowrisc_sd.c	2019-03-26 10:53:54.930739696 +0000
-@@ -0,0 +1,695 @@
++++ linux-4.20-rc2/drivers/mmc/host/lowrisc_sd.c	2019-03-28 08:44:11.810577974 +0000
+@@ -0,0 +1,694 @@
 +/*
 + *  LowRISC Secure Digital Host Controller Interface driver
 + *
@@ -82,7 +224,6 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/mmc/host/lowrisc_sd.c linux-4.20-rc2
 +#include <linux/platform_device.h>
 +
 +#define SD_IRQ
-+#define SD_SPINLOCK
 +#include "lowrisc_sd.h"
 +
 +#define DRIVER_NAME "lowrisc-mmc"
@@ -318,7 +459,7 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/mmc/host/lowrisc_sd.c linux-4.20-rc2
 +	u32 int_reg, int_status;
 +	int error = 0, ret = IRQ_HANDLED;
 +
-+#ifdef SD_SPINLOCK
++#ifdef SD_IRQ
 +	spin_lock(&host->lock);
 +#endif
 +	int_status = sd_base[irq_stat_resp];       
@@ -399,7 +540,7 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/mmc/host/lowrisc_sd.c linux-4.20-rc2
 +	}
 +irq_end:
 +        sd_irq_en(host, host->int_en);
-+#ifdef SD_SPINLOCK
++#ifdef SD_IRQ
 +	spin_unlock(&host->lock);
 +#endif
 +	return ret;
@@ -479,7 +620,7 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/mmc/host/lowrisc_sd.c linux-4.20-rc2
 +		return;
 +	}
 +
-+#ifdef SD_SPINLOCK
++#ifdef SD_IRQ
 +	spin_lock_irqsave(&host->lock, flags);
 +#endif
 +
@@ -558,7 +699,7 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/mmc/host/lowrisc_sd.c linux-4.20-rc2
 +        pr_debug("enabling SD_CARD_RESP_END interrupt\n");
 +        sd_irq_en(host, sd_base[irq_en_resp] | SD_CARD_RESP_END);
 +
-+#ifdef SD_SPINLOCK
++#ifdef SD_IRQ
 +	spin_unlock_irqrestore(&host->lock, flags);
 +#endif
 +}
@@ -568,11 +709,11 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/mmc/host/lowrisc_sd.c linux-4.20-rc2
 +	struct lowrisc_sd_host *host = mmc_priv(mmc);
 +	unsigned long flags;
 +
-+#ifdef SD_SPINLOCK
++#ifdef SD_IRQ
 +	spin_lock_irqsave(&host->lock, flags);
 +#endif
 +	__lowrisc_sd_set_ios(mmc, ios);
-+#ifdef SD_SPINLOCK
++#ifdef SD_IRQ
 +	spin_unlock_irqrestore(&host->lock, flags);
 +#endif
 +}
@@ -677,14 +818,14 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/mmc/host/lowrisc_sd.c linux-4.20-rc2
 +	mmc->f_max = 5000000;
 +	mmc->max_blk_count = 1;
 +	
-+#ifdef SD_SPINLOCK
++#ifdef SD_IRQ
 +	spin_lock_init(&host->lock);
 +#endif
 +
 +	lowrisc_sd_init(host);
 +#ifdef SD_IRQ
 +        host->irq = platform_get_irq(pdev, 0);
-+	ret = request_irq(host->irq, lowrisc_sd_irq, IRQF_SHARED, DRIVER_NAME, host);
++	ret = request_irq(host->irq, lowrisc_sd_irq, 0/*IRQF_SHARED*/, DRIVER_NAME, host);
 +        
 +	if (ret)
 +          {
@@ -960,8 +1101,8 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/net/ethernet/lowrisc/Kconfig linux-4
 +endif # NET_VENDOR_LOWRISC
 diff -urN -X obj.txt linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.c linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.c
 --- linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.c	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.c	2019-02-07 12:32:32.979360519 +0000
-@@ -0,0 +1,883 @@
++++ linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.c	2019-03-28 08:44:37.685912649 +0000
+@@ -0,0 +1,869 @@
 +/*
 + * Lowrisc Ether100MHz Linux driver for the Lowrisc Ethernet 100MHz device.
 + *
@@ -1013,6 +1154,8 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.
 +#include <linux/mdio-bitbang.h>
 +#include <linux/mdio-gpio.h>
 +#include <linux/workqueue.h>
++
++#define LOWRISC_ETH_IRQ
 +#include "lowrisc_100MHz.h"
 +
 +#define DRIVER_AUTHOR	"WOOJUNG HUH <woojung.huh@microchip.com>"
@@ -1050,26 +1193,18 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.
 +  int irq, num_tests, phy_addr;
 +
 +  struct napi_struct napi;
++#ifndef LOWRISC_ETH_IRQ
 +  struct my_work
 +  {
 +    struct delayed_work napi_work;// Embedded work_struct
 +    struct net_local *priv; // Your arguments
 +  } my_work;
++#endif
 +};
 +
 +static void inline eth_write(struct net_local *priv, size_t addr, int data)
 +{
 +  volatile uint64_t *eth_base = (volatile uint64_t *)(priv->ioaddr);
-+  eth_base[addr >> 3] = data;
-+}
-+
-+// for debugging
-+static void inline eth_write_verbose(struct net_local *priv, size_t addr, int data)
-+{
-+  volatile uint64_t *eth_base = (volatile uint64_t *)(priv->ioaddr);
-+#ifdef VERBOSE
-+  printk("eth_write(0x%lX, 0x%X);\n", addr, data);
-+#endif
 +  eth_base[addr >> 3] = data;
 +}
 +
@@ -1100,17 +1235,6 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.
 +  return eth_base[addr >> 3];
 +}
 +
-+// for debugging
-+static volatile inline int eth_read_verbose(struct net_local *priv, size_t addr)
-+{
-+  volatile uint64_t *eth_base = (volatile uint64_t *)(priv->ioaddr);
-+  int rslt = eth_base[addr >> 3];
-+#ifdef VERBOSE
-+  printk("eth_read(0x%lX, 0x%X);\n", addr, rslt);
-+#endif
-+  return rslt;
-+}
-+
 +static inline void eth_copyin(struct net_local *priv, uint8_t *data, int len, int start)
 +{
 +  int i, rnd = ((len-1)|7)+1;
@@ -1131,7 +1255,7 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.
 +    }
 +}
 +
-+#if 0
++#ifdef LOWRISC_ETH_IRQ
 +static void inline eth_enable_irq(struct net_local *priv)
 +{
 +  volatile uint64_t *eth_base = (volatile uint64_t *)(priv->ioaddr);
@@ -1249,7 +1373,7 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.
 +
 +	netif_stop_queue(ndev);
 +        napi_disable(&priv->napi);
-+#if 0
++#ifdef LOWRISC_ETH_IRQ
 +	eth_disable_irq(priv);
 +	free_irq(priv->irq, ndev);
 +        printk("Close device, free interrupt\n");
@@ -1470,12 +1594,14 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.
 + * received and hands it over to the TCP/IP stack.
 + */
 +
++#ifndef LOWRISC_ETH_IRQ
 +static void napi_work_function(struct work_struct *ws)
 +{
 +  struct my_work *p = container_of(ws, struct my_work, napi_work.work);
 +  struct net_local *priv = p->priv;  
 +  napi_schedule(&priv->napi);
 +}
++#endif
 +
 +static int lowrisc_ether_poll(struct napi_struct *napi, int budget)
 +{
@@ -1521,16 +1647,22 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.
 +    return 1;
 +  else
 +    {
++#ifndef LOWRISC_ETH_IRQ
 +      unsigned long delay = 5;
 +      INIT_DELAYED_WORK(&priv->my_work.napi_work, napi_work_function);
 +      priv->my_work.priv = priv;
++#endif
 +      napi_complete_done(&priv->napi, rx_count);
++#ifdef LOWRISC_ETH_IRQ
++      eth_enable_irq(priv);
++#else
 +      schedule_delayed_work(&priv->my_work.napi_work, delay);
++#endif
 +      return 0;
 +    }
 +}
 +
-+#if 0
++#ifdef LOWRISC_ETH_IRQ
 +irqreturn_t lowrisc_ether_isr(int irq, void *priv_id)
 +{
 +  int rsr;
@@ -1582,19 +1714,10 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.
 +    }
 +}
 +
-+static void lowrisc_self_test(struct net_device *ndev,
-+                           struct ethtool_test *etest,
-+                           u64 *buf)
-+{
-+        struct net_local *priv = netdev_priv(ndev);
-+
-+        memset(buf, 0, sizeof(u64) * priv->num_tests);
-+}
 +
 +static const struct ethtool_ops lowrisc_ethtool_ops = {
 +	.get_regs_len		= lowrisc_get_regs_len,
 +	.get_regs		= lowrisc_get_regs,
-+        .self_test              = lowrisc_self_test,
 +        .get_link_ksettings     = phy_ethtool_get_link_ksettings,
 +        .set_link_ksettings     = phy_ethtool_set_link_ksettings        
 +};
@@ -1622,10 +1745,10 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.
 +    phy_start(priv->phy_dev);
 +  }
 +  
-+#if 0
++#ifdef LOWRISC_ETH_IRQ
 +  /* Grab the IRQ */
 +  printk("Open device, request interrupt %d\n", priv->irq);
-+  retval = request_irq(priv->irq, lowrisc_ether_isr, IRQF_SHARED, ndev->name, priv);
++  retval = request_irq(priv->irq, lowrisc_ether_isr, 0/*IRQF_SHARED*/, ndev->name, priv);
 +  if (retval) {
 +    dev_err(&priv->ndev->dev, "Could not allocate interrupt %d\n", priv->irq);
 +    if (priv->phy_dev)
@@ -1641,9 +1764,13 @@ diff -urN -X obj.txt linux-4.20-rc2/drivers/net/ethernet/lowrisc/lowrisc_100MHz.
 +  napi_enable(&priv->napi);
 +  netif_start_queue(ndev);
 +
++#ifdef LOWRISC_ETH_IRQ
++  /* first call to handler enables the irq */
++  lowrisc_ether_isr(priv->irq, priv);
++#else
 +  /* enable handler */
 +  napi_schedule(&priv->napi);
-+
++#endif
 +  return retval;
 +}
 +
